@@ -45,3 +45,58 @@ jobs:
 
       - name: Scan git history
         run: gitleaks git -v --no-banner --redact .
+
+  revue-ia:
+    if: github.event_name == 'pull_request'
+    needs: [qualite, secrets]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - name: Check Copilot token
+        id: copilot-token
+        env:
+          COPILOT_PAT: ${{ secrets.COPILOT_PAT }}
+        run: |
+          if [ -n "$COPILOT_PAT" ]; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "revue IA sautée"
+            echo "available=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Checkout full history
+        if: steps.copilot-token.outputs.available == 'true'
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        if: steps.copilot-token.outputs.available == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Install GitHub Copilot CLI
+        if: steps.copilot-token.outputs.available == 'true'
+        run: npm install -g @github/copilot
+
+      - name: Create pull request diff
+        if: steps.copilot-token.outputs.available == 'true'
+        env:
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+        run: git diff "origin/${BASE_REF}...HEAD" -- . ':(exclude)**/package-lock.json' ':(exclude)package-lock.json' > pr.diff
+
+      - name: Review pull request
+        if: steps.copilot-token.outputs.available == 'true'
+        env:
+          COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_PAT }}
+        run: copilot -p "Relis la pull request dont le diff est dans pr.diff, selon ta consigne." --agent relecteur-pr -s --no-ask-user --allow-all-tools --deny-tool=write --deny-tool=shell --max-ai-credits 30 > revue.md
+
+      - name: Comment review
+        if: steps.copilot-token.outputs.available == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: gh pr comment "$PR_NUMBER" --body-file revue.md
